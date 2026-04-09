@@ -1,10 +1,10 @@
 import { useState, useEffect, useRef } from "react";
 
 const Q = {
-  q1: { label: "Do Now",    sub: "Urgent Â· Important",         accent: "#DC2626", light: "#FEF2F2", border: "#FECACA", tag: "#FEE2E2", tagText: "#991B1B" },
-  q2: { label: "Schedule",  sub: "Important Â· Not Urgent",     accent: "#2563EB", light: "#EFF6FF", border: "#BFDBFE", tag: "#DBEAFE", tagText: "#1E40AF" },
-  q3: { label: "Delegate",  sub: "Urgent Â· Not Important",     accent: "#D97706", light: "#FFFBEB", border: "#FDE68A", tag: "#FEF3C7", tagText: "#92400E" },
-  q4: { label: "Eliminate", sub: "Not Urgent Â· Not Important", accent: "#6B7280", light: "#F9FAFB", border: "#E5E7EB", tag: "#F3F4F6", tagText: "#374151" },
+  q1: { label: "Do Now",    sub: "Urgent · Important",         accent: "#DC2626", light: "#FEF2F2", border: "#FECACA", tag: "#FEE2E2", tagText: "#991B1B" },
+  q2: { label: "Schedule",  sub: "Important · Not Urgent",     accent: "#2563EB", light: "#EFF6FF", border: "#BFDBFE", tag: "#DBEAFE", tagText: "#1E40AF" },
+  q3: { label: "Delegate",  sub: "Urgent · Not Important",     accent: "#D97706", light: "#FFFBEB", border: "#FDE68A", tag: "#FEF3C7", tagText: "#92400E" },
+  q4: { label: "Eliminate", sub: "Not Urgent · Not Important", accent: "#6B7280", light: "#F9FAFB", border: "#E5E7EB", tag: "#F3F4F6", tagText: "#374151" },
 };
 
 // grid order: [top-left=q2, top-right=q1, bottom-left=q4, bottom-right=q3]
@@ -18,7 +18,7 @@ Quadrants:
 - q3 "Delegate": Urgent but NOT Important
 - q4 "Eliminate": NOT Urgent and NOT Important
 
-Personality: Warm, coaching, like a friend. Always acknowledge before asking. One question at a time. Ask as many as needed until genuinely confident. Keep responses short â they are spoken aloud.
+Personality: Warm, coaching, like a friend. Always acknowledge before asking. One question at a time. Ask as many as needed until genuinely confident. Keep responses short — they are spoken aloud.
 
 For URGENCY ask: deadlines, consequences of delay, someone waiting.
 For IMPORTANCE ask: goal alignment, impact if never done, only they can do it.
@@ -32,11 +32,16 @@ CRITICAL: always respond with ONLY valid JSON, no markdown, no backticks:
 
 taskName = clean 2-5 word version of task.`;
 
+const ANTHROPIC_KEY = import.meta.env.VITE_ANTHROPIC_API_KEY || "";
+
 async function callClaroAPI(messages, extra = "") {
-  const r = await fetch("/api/chat", {
+  if (!ANTHROPIC_KEY) return { message: "Add VITE_ANTHROPIC_API_KEY to Vercel environment variables and redeploy.", action: "continue", quadrant: null, taskName: null };
+  const r = await fetch("https://api.anthropic.com/v1/messages", {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", "x-api-key": ANTHROPIC_KEY, "anthropic-version": "2023-06-01", "anthropic-dangerous-direct-browser-access": "true" },
     body: JSON.stringify({
+      model: "claude-sonnet-4-20250514",
+      max_tokens: 1000,
       system: SYS + (extra ? "\n\n" + extra : ""),
       messages,
     }),
@@ -75,21 +80,6 @@ function stopSpeaking() { window.speechSynthesis?.cancel(); }
 let uid = 1;
 const nextId = () => uid++;
 
-// localStorage helpers (replaces window.storage from artifacts)
-function loadTasks() {
-  try {
-    const saved = localStorage.getItem("claro-tasks");
-    if (saved) {
-      const parsed = JSON.parse(saved);
-      if (Array.isArray(parsed) && parsed.length > 0) return parsed;
-    }
-  } catch (_) {}
-  return null;
-}
-function saveTasks(tasks) {
-  try { localStorage.setItem("claro-tasks", JSON.stringify(tasks)); } catch (_) {}
-}
-
 export default function Claro() {
   const [tasks,       setTasks]       = useState([]);
   const [apiMsgs,     setApiMsgs]     = useState([]);
@@ -98,7 +88,7 @@ export default function Claro() {
   const [listening,   setListening]   = useState(false);
   const [isSpeaking,  setIsSpeaking]  = useState(false);
   const [panelOpen,   setPanelOpen]   = useState(false);
-  const [expandedQ,   setExpandedQ]   = useState(null);
+  const [expandedQ,   setExpandedQ]   = useState(null); // qid or null
   const [input,       setInput]       = useState("");
   const [pending,     setPending]     = useState(null);
   const [editTask,    setEditTask]    = useState(null);
@@ -117,17 +107,26 @@ export default function Claro() {
     return () => clearInterval(iv);
   }, []);
 
-  // Boot â load from localStorage
+  // Boot
   useEffect(() => {
-    const saved = loadTasks();
-    if (saved) { setTasks(saved); isNew.current = false; }
-    setLoaded(true);
+    async function boot() {
+      let hasSaved = false;
+      try {
+        const saved = await window.storage.get("claro-tasks");
+        if (saved?.value) {
+          const parsed = JSON.parse(saved.value);
+          if (Array.isArray(parsed) && parsed.length > 0) { setTasks(parsed); hasSaved = true; isNew.current = false; }
+        }
+      } catch (_) {}
+      setLoaded(true);
+      // Don't auto-open panel — user taps mic to start
+    }
+    boot();
   }, []);
 
-  // Save tasks to localStorage whenever they change
   useEffect(() => {
     if (!loaded) return;
-    saveTasks(tasks);
+    window.storage.set("claro-tasks", JSON.stringify(tasks)).catch(() => {});
   }, [tasks, loaded]);
 
   function addChatAndSpeak(role, text) {
@@ -183,6 +182,7 @@ export default function Claro() {
     stopSpeaking();
     setPanelOpen(true);
     setEditTask(null);
+    // Greet if chat is empty
     if (chat.length === 0) {
       setThinking(true);
       const init = [{ role: "user", content: "Hello" }];
@@ -204,7 +204,7 @@ export default function Claro() {
     if (listening) { recRef.current?.stop(); return; }
     setMicError("");
     const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-    if (!SR) { setMicError("Try Chrome â voice not supported here."); return; }
+    if (!SR) { setMicError("Try Chrome — voice not supported here."); return; }
     stopSpeaking();
     const r = new SR();
     r.lang = "en-US"; r.continuous = false; r.interimResults = false;
@@ -213,7 +213,7 @@ export default function Claro() {
     r.onerror  = (e) => {
       setListening(false);
       if (e.error === "not-allowed") setMicError("Allow mic access in your browser settings.");
-      else if (e.error === "no-speech") setMicError("Didn't catch that â try again.");
+      else if (e.error === "no-speech") setMicError("Didn't catch that — try again.");
       else setMicError("Mic error. Try typing instead.");
     };
     r.onresult = (e) => {
@@ -231,7 +231,7 @@ export default function Claro() {
     setPanelOpen(true); setThinking(true);
     const init = [{ role: "user", content: `Re-evaluate: "${task.text}"` }];
     setApiMsgs(init);
-    callClaroAPI(init, `User tapped "${task.text}" in ${Q[task.quadrant].label}. Warmly say you will re-evaluate it. Ask fresh questions. Keep it short â spoken aloud.`).then(r => {
+    callClaroAPI(init, `User tapped "${task.text}" in ${Q[task.quadrant].label}. Warmly say you will re-evaluate it. Ask fresh questions. Keep it short — spoken aloud.`).then(r => {
       setThinking(false);
       if (r.message) { addChatAndSpeak("claro", r.message); setApiMsgs(p => [...p, { role: "assistant", content: JSON.stringify(r) }]); }
     });
@@ -265,7 +265,7 @@ export default function Claro() {
         ::-webkit-scrollbar-thumb{background:#D1D5DB;border-radius:4px}
       `}</style>
 
-      {/* Header */}
+      {/* ── Header ── */}
       <div style={{ background: "#fff", borderBottom: "1px solid #E5E7EB", padding: "11px 18px", display: "flex", alignItems: "center", justifyContent: "space-between", flexShrink: 0, zIndex: 10 }}>
         <div style={{ fontFamily: "'Syne',sans-serif", fontWeight: 800, fontSize: 19, letterSpacing: 3, color: "#4F46E5" }}>CLARO</div>
         <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
@@ -283,7 +283,7 @@ export default function Claro() {
         </div>
       </div>
 
-      {/* Expanded Quadrant View */}
+      {/* ══════════ EXPANDED QUADRANT VIEW ══════════ */}
       {expandedQ && (
         <div style={{
           flex: 1, background: Q[expandedQ].light,
@@ -293,13 +293,14 @@ export default function Claro() {
           paddingBottom: panelOpen ? "50vh" : 0,
           transition: "padding-bottom .3s ease",
         }}>
+          {/* Expanded header */}
           <div style={{ padding: "14px 18px", display: "flex", alignItems: "center", justifyContent: "space-between", borderBottom: `1px solid ${Q[expandedQ].border}`, background: "#fff" }}>
             <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
               <button
                 onClick={() => { setExpandedQ(null); stopSpeaking(); setPanelOpen(false); }}
                 style={{ background: "#F3F4F6", border: "1px solid #E5E7EB", borderRadius: 8, padding: "6px 12px", cursor: "pointer", fontSize: 13, color: "#374151", fontFamily: "'DM Sans',sans-serif", fontWeight: 500 }}
               >
-                &larr; Back
+                ← Back
               </button>
               <span style={{ background: Q[expandedQ].tag, color: Q[expandedQ].tagText, fontSize: 11, fontWeight: 700, letterSpacing: 1.2, padding: "4px 12px", borderRadius: 7, fontFamily: "'Syne',sans-serif" }}>
                 {Q[expandedQ].label.toUpperCase()}
@@ -314,10 +315,11 @@ export default function Claro() {
             </button>
           </div>
 
+          {/* Tasks in expanded view */}
           <div style={{ flex: 1, overflowY: "auto", padding: "16px 18px", display: "flex", flexDirection: "column", gap: 10 }}>
             {inQ(expandedQ).length === 0 ? (
               <div style={{ textAlign: "center", paddingTop: 40 }}>
-                <div style={{ fontSize: 36, marginBottom: 12 }}>ð</div>
+                <div style={{ fontSize: 36, marginBottom: 12 }}>📋</div>
                 <div style={{ fontSize: 15, color: "#9CA3AF", fontWeight: 500 }}>No tasks here yet</div>
                 <div style={{ fontSize: 13, color: "#C4C8D0", marginTop: 6 }}>Tap the mic or "Add task" to get started</div>
               </div>
@@ -340,7 +342,7 @@ export default function Claro() {
                 }}>
                   <span style={{ flex: 1 }}>{task.text}</span>
                   <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 4, flexShrink: 0 }}>
-                    <button className="del" onClick={e => removeTask(task.id, e)} style={{ background: "none", border: "none", color: "#D1D5DB", cursor: "pointer", fontSize: 16, lineHeight: 1, padding: 0 }}>&times;</button>
+                    <button className="del" onClick={e => removeTask(task.id, e)} style={{ background: "none", border: "none", color: "#D1D5DB", cursor: "pointer", fontSize: 16, lineHeight: 1, padding: 0 }}>×</button>
                     <span style={{ fontSize: 10, color: Q[expandedQ].accent, opacity: .6 }}>tap to edit</span>
                   </div>
                 </div>
@@ -350,7 +352,7 @@ export default function Claro() {
         </div>
       )}
 
-      {/* Matrix View */}
+      {/* ══════════ MATRIX VIEW (main) ══════════ */}
       {!expandedQ && (
         <div style={{ flex: 1, position: "relative", display: "grid", gridTemplateColumns: "1fr 1fr", gridTemplateRows: "1fr 1fr", overflow: "hidden" }}>
 
@@ -373,12 +375,14 @@ export default function Claro() {
                   overflow: "hidden",
                   borderRight:  !isRight  ? "1px solid #E5E7EB" : "none",
                   borderBottom: !isBottom ? "1px solid #E5E7EB" : "none",
+                  // Padding toward center to leave room for mic
                   paddingBottom: isBottom ? 14 : 32,
                   paddingTop:    isBottom ? 32 : 14,
                   paddingRight:  isRight  ? 14 : 32,
                   paddingLeft:   isRight  ? 32 : 14,
                 }}
               >
+                {/* Quadrant label */}
                 <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
                   <span style={{ background: cfg.tag, color: cfg.tagText, fontSize: 10, fontWeight: 700, letterSpacing: 1, padding: "3px 9px", borderRadius: 6, fontFamily: "'Syne',sans-serif" }}>
                     {cfg.label.toUpperCase()}
@@ -391,7 +395,8 @@ export default function Claro() {
                 </div>
                 <div style={{ fontSize: 9, color: "#9CA3AF", letterSpacing: .3 }}>{cfg.sub}</div>
 
-                {qt.slice(0, 3).map((task) => (
+                {/* Preview task cards */}
+                {qt.slice(0, 3).map((task, ti) => (
                   <div key={task.id} style={{
                     background: "#fff",
                     border: `1px solid ${cfg.border}`,
@@ -420,8 +425,9 @@ export default function Claro() {
             );
           })}
 
-          {/* Center Mic Button */}
+          {/* ── CENTER MIC BUTTON ── */}
           <div style={{ position: "absolute", top: "50%", left: "50%", zIndex: 20, pointerEvents: "none" }}>
+            {/* Ripple when speaking */}
             {isSpeaking && (
               <div style={{
                 position: "absolute", top: "50%", left: "50%",
@@ -431,6 +437,7 @@ export default function Claro() {
                 pointerEvents: "none",
               }} />
             )}
+            {/* Listening pulse ring */}
             {listening && (
               <div style={{
                 position: "absolute", top: "50%", left: "50%",
@@ -446,7 +453,7 @@ export default function Claro() {
               style={{
                 position: "absolute", top: "50%", left: "50%",
                 width: MIC_SIZE, height: MIC_SIZE, borderRadius: "50%",
-                background: listening ? "#DC2626" : "#4F46E5",
+                background: listening ? "#DC2626" : isSpeaking ? "#4F46E5" : "#4F46E5",
                 border: "3px solid #fff",
                 cursor: "pointer", fontSize: 20,
                 display: "flex", alignItems: "center", justifyContent: "center",
@@ -456,13 +463,13 @@ export default function Claro() {
                 transition: "background .2s ease",
               }}
             >
-              {listening ? "â¹" : isSpeaking ? "ð" : "ð"}
+              {listening ? "⏹" : isSpeaking ? "🔊" : "🎙"}
             </button>
           </div>
         </div>
       )}
 
-      {/* Conversation Panel */}
+      {/* ══════════ CONVERSATION PANEL ══════════ */}
       {panelOpen && (
         <div style={{
           position: "fixed", bottom: 0, left: 0, right: 0,
@@ -475,6 +482,7 @@ export default function Claro() {
           zIndex: 300,
           boxShadow: "0 -4px 24px rgba(0,0,0,.1)",
         }}>
+          {/* Panel header */}
           <div style={{ padding: "10px 16px", display: "flex", alignItems: "center", justifyContent: "space-between", borderBottom: "1px solid #F3F4F6", flexShrink: 0 }}>
             <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
               {isSpeaking ? (
@@ -487,7 +495,7 @@ export default function Claro() {
                 <div style={{ width: 8, height: 8, borderRadius: "50%", background: thinking ? "#4F46E5" : listening ? "#DC2626" : "#10B981", animation: (thinking || listening) ? "pulseBtn .7s infinite" : "none" }} />
               )}
               <span style={{ fontSize: 10.5, fontWeight: 600, color: "#6B7280", letterSpacing: 1 }}>
-                {listening ? "LISTENING..." : isSpeaking ? "CLARO IS SPEAKING" : thinking ? "THINKING..." : editTask ? "RE-EVALUATING" : "CLARO Â· COACH"}
+                {listening ? "LISTENING..." : isSpeaking ? "CLARO IS SPEAKING" : thinking ? "THINKING..." : editTask ? "RE-EVALUATING" : "CLARO · COACH"}
               </span>
             </div>
             <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
@@ -496,10 +504,11 @@ export default function Claro() {
                   Stop
                 </button>
               )}
-              <button onClick={() => { setPanelOpen(false); setEditTask(null); stopSpeaking(); }} style={{ background: "none", border: "none", color: "#9CA3AF", cursor: "pointer", fontSize: 22, lineHeight: 1, padding: 0 }}>&times;</button>
+              <button onClick={() => { setPanelOpen(false); setEditTask(null); stopSpeaking(); }} style={{ background: "none", border: "none", color: "#9CA3AF", cursor: "pointer", fontSize: 22, lineHeight: 1, padding: 0 }}>×</button>
             </div>
           </div>
 
+          {/* Chat */}
           <div style={{ flex: 1, overflowY: "auto", padding: "12px 16px", display: "flex", flexDirection: "column", gap: 9 }}>
             {chat.map(msg => (
               <div key={msg.cid} style={{ display: "flex", justifyContent: msg.role === "user" ? "flex-end" : "flex-start", animation: "fadeUp .2s ease" }}>
@@ -529,7 +538,7 @@ export default function Claro() {
                   color: Q[pending.quadrant].tagText, cursor: "pointer", fontSize: 13, fontWeight: 600,
                   fontFamily: "'DM Sans',sans-serif",
                 }}>
-                  Yes &mdash; place in {pending.quadrantName}
+                  Yes — place in {pending.quadrantName}
                 </button>
                 <button onClick={() => confirm(false)} style={{
                   padding: "11px 16px", borderRadius: 10,
@@ -541,18 +550,20 @@ export default function Claro() {
             <div ref={bottomRef} />
           </div>
 
+          {/* Mic error */}
           {micError && (
             <div style={{ margin: "0 12px 4px", padding: "7px 12px", background: "#FEF2F2", border: "1px solid #FECACA", borderRadius: 8, fontSize: 12, color: "#991B1B" }}>
               {micError}
             </div>
           )}
 
+          {/* Input */}
           <div style={{ padding: "8px 12px 16px", display: "flex", gap: 8, flexShrink: 0, borderTop: "1px solid #F3F4F6" }}>
             <input
               value={input}
               onChange={e => setInput(e.target.value)}
               onKeyDown={e => e.key === "Enter" && !thinking && send(input)}
-              placeholder={listening ? "Listening â speak now..." : "Type here or tap mic..."}
+              placeholder={listening ? "Listening — speak now..." : "Type here or tap mic..."}
               style={{
                 flex: 1, background: "#F9FAFB",
                 border: `1.5px solid ${listening ? "#FECACA" : "#E5E7EB"}`,
@@ -570,7 +581,7 @@ export default function Claro() {
                 display: "flex", alignItems: "center", justifyContent: "center",
                 animation: listening ? "pulseBtn .6s infinite" : "none",
               }}
-            >{listening ? "â¹" : "ð"}</button>
+            >{listening ? "⏹" : "🎙"}</button>
             <button
               onClick={() => !thinking && input.trim() && send(input)}
               style={{
@@ -582,7 +593,7 @@ export default function Claro() {
                 display: "flex", alignItems: "center", justifyContent: "center",
                 transition: "all .15s ease",
               }}
-            >&rarr;</button>
+            >→</button>
           </div>
         </div>
       )}
